@@ -1,0 +1,11 @@
+torch
+torchvision
+torchaudio
+transformers
+accelerate
+qwen-vl-utils
+bitsandbytes
+opencv-python
+pillow
+python-dotenv
+tqdm

@@ -1,0 +1,9 @@
+venv/
+pip_tmp/
+segments/
+processed/
+output/
+__pycache__/
+.env
+.superpowers/
+*.mp4
