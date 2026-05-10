@@ -1,5 +1,10 @@
 import os
+import sys
 import shutil
+
+# Add project root to sys.path to allow running as 'python3 src/main.py'
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from dotenv import load_dotenv
 from src.processor import VideoProcessor
 from src.analyzer import VLMAnalyzer
