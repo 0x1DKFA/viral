@@ -5,9 +5,9 @@ import json
 import re
 
 class VLMAnalyzer:
-    def __init__(self, model_id="Qwen/Qwen3-VL-7B-Instruct"):
+    def __init__(self, model_id="Qwen/Qwen3-VL-8B-Instruct"):
         print(f"Loading model {model_id} in 4-bit...")
-        self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+        self.model = AutoModelForImageTextToText.from_pretrained(
             model_id,
             torch_dtype="auto",
             device_map="auto",
