@@ -1,5 +1,5 @@
 import torch
-from transformers import AutoModelForImageTextToText, AutoProcessor
+from transformers import AutoModelForImageTextToText, AutoProcessor, BitsAndBytesConfig
 from qwen_vl_utils import process_vision_info
 import json
 import re
@@ -7,11 +7,19 @@ import re
 class VLMAnalyzer:
     def __init__(self, model_id="Qwen/Qwen3-VL-8B-Instruct"):
         print(f"Loading model {model_id} in 4-bit...")
+        
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
+
         self.model = AutoModelForImageTextToText.from_pretrained(
             model_id,
-            torch_dtype="auto",
+            torch_dtype=torch.float16,
             device_map="auto",
-            load_in_4bit=True,
+            quantization_config=quantization_config,
             attn_implementation="flash_attention_2"
         )
         self.processor = AutoProcessor.from_pretrained(model_id)
