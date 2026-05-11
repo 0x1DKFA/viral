@@ -3,6 +3,8 @@ from transformers import AutoModelForImageTextToText, AutoProcessor, BitsAndByte
 from qwen_vl_utils import process_vision_info
 import json
 import re
+import cv2
+from PIL import Image
 
 class VLMAnalyzer:
     def __init__(self, model_id="Qwen/Qwen3-VL-8B-Instruct"):
@@ -23,16 +25,46 @@ class VLMAnalyzer:
         )
         self.processor = AutoProcessor.from_pretrained(model_id)
 
+    def _extract_frames(self, video_path, fps=1.0):
+        """Extract frames manually using OpenCV to bypass broken torchvision.io."""
+        container = cv2.VideoCapture(video_path)
+        video_fps = container.get(cv2.CAP_PROP_FPS)
+        if video_fps <= 0:
+            video_fps = 30 # Fallback
+            
+        step = max(1, int(video_fps / fps))
+        frames = []
+        count = 0
+        while True:
+            ret, frame = container.read()
+            if not ret:
+                break
+            if count % step == 0:
+                # Convert BGR (OpenCV) to RGB (PIL)
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frames.append(Image.fromarray(frame_rgb))
+            count += 1
+        container.release()
+        return frames
+
     def analyze(self, video_path):
+        # Extract frames manually to bypass torchvision bug
+        frames = self._extract_frames(video_path, fps=1.0)
+        
+        if not frames:
+            print(f"Warning: No frames extracted from {video_path}")
+            return {"score": 0, "action_center_x": 0.5}
+
         # Construct the prompt for viral highlight detection
+        # We pass the frames as a 'video' content type, but providing the PIL images directly
         messages = [
             {
                 "role": "user",
                 "content": [
                     {
                         "type": "video",
-                        "video": video_path,
-                        "fps": 1.0, # Sample 1 frame per second to save tokens/memory
+                        "video": frames, # Pass list of PIL images
+                        "fps": 1.0,
                     },
                     {
                         "type": "text",
