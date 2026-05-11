@@ -20,7 +20,6 @@ class VLMAnalyzer:
             torch_dtype=torch.float16,
             device_map="auto",
             quantization_config=quantization_config,
-            attn_implementation="flash_attention_2"
         )
         self.processor = AutoProcessor.from_pretrained(model_id)
 
