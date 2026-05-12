@@ -1,9 +1,12 @@
 venv/
+.venv/
 pip_tmp/
-segments/
 processed/
 output/
+raw_recordings/
 __pycache__/
+*.pyc
 .env
 .superpowers/
+.pytest_cache/
 *.mp4
