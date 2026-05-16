@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 from typing import Any
 
 import torch
@@ -44,7 +45,11 @@ RETRY_SUFFIX = (
 
 
 class VLMAnalyzer:
-    def __init__(self, model_id: str = "Qwen/Qwen3-VL-8B-Instruct"):
+    def __init__(
+        self,
+        model_id: str = "Qwen/Qwen3-VL-8B-Instruct",
+        max_frame_pixels: int = 480 * 854,  # ~480p; shrinks RAM/VRAM use a lot
+    ):
         if process_vision_info is None:
             raise RuntimeError(
                 "qwen-vl-utils is required at runtime; install via requirements.txt"
@@ -57,14 +62,40 @@ class VLMAnalyzer:
             bnb_4bit_quant_type="nf4",
             bnb_4bit_use_double_quant=True,
         )
+        # low_cpu_mem_usage: stream weight shards directly onto the GPU instead of
+        #   materializing full fp16 weights in CPU RAM first. Critical on 16GB hosts.
+        # device_map={"": 0}: pin the whole model to GPU 0 so device_map="auto" can't
+        #   silently offload pieces to CPU/disk (which causes swap thrash + OOM kill).
         self.model = AutoModelForImageTextToText.from_pretrained(
             model_id,
-            torch_dtype=torch.float16,
-            device_map="auto",
+            device_map={"": 0},
             quantization_config=quantization_config,
+            low_cpu_mem_usage=True,
         )
+        self.model.eval()
         self.processor = AutoProcessor.from_pretrained(model_id)
         self.model_id = model_id
+        self.max_frame_pixels = max_frame_pixels
+
+    def _shrink_frames(self, frames: list[Image.Image]) -> list[Image.Image]:
+        """Downscale frames so total pixel count per frame stays under the budget.
+
+        The VLM doesn't need 1080p to judge a clip; shrinking to ~480p slashes the
+        encoder activation memory dramatically with minimal quality loss for scoring.
+        """
+        if self.max_frame_pixels <= 0:
+            return frames
+        out: list[Image.Image] = []
+        for f in frames:
+            w, h = f.size
+            pixels = w * h
+            if pixels <= self.max_frame_pixels:
+                out.append(f)
+                continue
+            scale = (self.max_frame_pixels / pixels) ** 0.5
+            new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+            out.append(f.resize(new_size, Image.BILINEAR))
+        return out
 
     def _build_messages(
         self, frames: list[Image.Image], duration_sec: float, retry: bool
@@ -105,17 +136,30 @@ class VLMAnalyzer:
             **video_kwargs,
         ).to(self.model.device)
 
-        generated_ids = self.model.generate(**inputs, max_new_tokens=256)
-        trimmed = [
-            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-        ]
-        return self.processor.batch_decode(
-            trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-        )[0]
+        try:
+            with torch.inference_mode():
+                generated_ids = self.model.generate(**inputs, max_new_tokens=256)
+            trimmed = [
+                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            ]
+            return self.processor.batch_decode(
+                trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+            )[0]
+        finally:
+            # Release activation / KV-cache memory between chunks so the next call
+            # doesn't compound. Cheap to do, big difference on tight-RAM systems.
+            del inputs
+            if "generated_ids" in locals():
+                del generated_ids
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def analyze(self, frames: list[Image.Image], duration_sec: float) -> Highlight | None:
         if not frames:
             return None
+
+        frames = self._shrink_frames(frames)
 
         for retry in (False, True):
             messages = self._build_messages(frames, duration_sec, retry=retry)
