@@ -20,22 +20,35 @@ except ImportError:  # pragma: no cover - optional path, keeps tests importable 
 
 
 PROMPT = (
-    "You are reviewing a gameplay clip for short-form viral content.\n"
-    "Frames are sampled at 1 fps in chronological order; the clip lasts {duration:.1f} seconds.\n"
-    "Decide whether this clip contains a highlight worth posting as a 9:16 short.\n"
+    "You are reviewing a {duration:.1f}-second gameplay clip for short-form viral content.\n"
+    "Frames are sampled in chronological order.\n"
+    "\n"
+    "Viral gameplay moments include: multi-kills, clutch 1vN saves, ace rounds, "
+    "improbable shots, perfect timing, hilarious deaths, glitchy/funny fails, jumpscares, "
+    "rage moments, comeback wins, sick movement (bhop/wall-bang/no-scope), big damage numbers, "
+    "boss kills, surprising reactions. Mundane gameplay (walking, looting, menus, loading, "
+    "downtime) is NOT viral, even if technically competent.\n"
+    "\n"
+    "Pick a clip window that includes:\n"
+    "  - 2-4 seconds of LEAD-IN (the setup before the moment)\n"
+    "  - the PAYOFF itself\n"
+    "  - 1-2 seconds of AFTERMATH (reaction, kill feed, scoreboard)\n"
+    "The window MUST be at least {min_clip:.0f} seconds long and at most {max_clip:.0f} seconds.\n"
+    "If no moment in this {duration:.1f}-second segment meets the bar, set is_highlight=false "
+    "and score <= 4 — do NOT manufacture a highlight from filler.\n"
     "\n"
     "Return ONLY a single JSON object with these exact keys:\n"
     '{{\n'
     '  "is_highlight": boolean,\n'
-    '  "score": integer 1-10 (10 = must-post),\n'
-    '  "start_sec": float (seconds from clip start where the highlight begins),\n'
-    '  "end_sec": float (seconds from clip start where the highlight ends),\n'
+    '  "score": integer 1-10 (10 = must-post, 7+ = worth posting, <=4 = skip),\n'
+    '  "start_sec": float (window start, seconds from clip start),\n'
+    '  "end_sec": float (window end, seconds from clip start; end_sec - start_sec >= {min_clip:.0f}),\n'
     '  "action_center_x": float 0.0-1.0 (horizontal center of the action; 0.5 = middle),\n'
-    '  "title": string (<= 60 chars, punchy, no quotes),\n'
-    '  "description": string (1-2 sentences),\n'
+    '  "title": string (<= 60 chars, punchy, no quotes, no clickbait emojis),\n'
+    '  "description": string (1-2 sentences describing what happens),\n'
     '  "hashtags": list of 3-5 strings, each starting with #\n'
     '}}\n'
-    "Do not output anything except the JSON object."
+    "Output ONLY the JSON object, nothing else."
 )
 
 RETRY_SUFFIX = (
@@ -49,6 +62,8 @@ class VLMAnalyzer:
         self,
         model_id: str = "Qwen/Qwen3-VL-8B-Instruct",
         max_frame_pixels: int = 480 * 854,  # ~480p; shrinks RAM/VRAM use a lot
+        min_clip_sec: float = 8.0,
+        max_clip_sec: float = 25.0,
     ):
         if process_vision_info is None:
             raise RuntimeError(
@@ -76,6 +91,8 @@ class VLMAnalyzer:
         self.processor = AutoProcessor.from_pretrained(model_id)
         self.model_id = model_id
         self.max_frame_pixels = max_frame_pixels
+        self.min_clip_sec = min_clip_sec
+        self.max_clip_sec = max_clip_sec
 
     def _shrink_frames(self, frames: list[Image.Image]) -> list[Image.Image]:
         """Downscale frames so total pixel count per frame stays under the budget.
@@ -100,7 +117,11 @@ class VLMAnalyzer:
     def _build_messages(
         self, frames: list[Image.Image], duration_sec: float, retry: bool
     ) -> list[dict[str, Any]]:
-        prompt = PROMPT.format(duration=duration_sec)
+        prompt = PROMPT.format(
+            duration=duration_sec,
+            min_clip=self.min_clip_sec,
+            max_clip=self.max_clip_sec,
+        )
         if retry:
             prompt = prompt + RETRY_SUFFIX
         return [
@@ -164,7 +185,11 @@ class VLMAnalyzer:
         for retry in (False, True):
             messages = self._build_messages(frames, duration_sec, retry=retry)
             raw = self._generate(messages)
-            highlight = parse_highlight(raw, chunk_duration_sec=duration_sec)
+            highlight = parse_highlight(
+                raw,
+                chunk_duration_sec=duration_sec,
+                min_clip_sec=self.min_clip_sec,
+            )
             if highlight is not None:
                 return highlight
             print(f"[analyzer] Unparseable output (retry={retry}): {raw[:200]!r}")

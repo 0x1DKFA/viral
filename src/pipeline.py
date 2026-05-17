@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import json
 import os
 import shutil
@@ -25,10 +26,45 @@ class PipelineConfig:
     dry_run: bool = False
 
 
-def _output_paths(out_root: str, source_path: str, chunk_idx: int, highlight: Highlight) -> tuple[str, str]:
-    stem = os.path.splitext(os.path.basename(source_path))[0]
-    dest_dir = os.path.join(out_root, stem)
-    os.makedirs(dest_dir, exist_ok=True)
+# Dedup thresholds. IoU catches partial overlaps within a chunk; gap catches the
+# common case where the same moment straddles a chunk boundary and produces two
+# back-to-back non-overlapping windows.
+_DEDUP_IOU = 0.3
+_DEDUP_GAP_SEC = 2.0
+
+
+def _is_duplicate(
+    candidate: tuple[float, float], saved: list[tuple[float, float]]
+) -> bool:
+    cs, ce = candidate
+    for ss, se in saved:
+        inter = max(0.0, min(ce, se) - max(cs, ss))
+        union = max(ce, se) - min(cs, ss)
+        iou = inter / union if union > 0 else 0.0
+        if iou > _DEDUP_IOU:
+            return True
+        # Gap is positive when the two intervals are disjoint; clamp to 0 when overlap.
+        gap = max(0.0, max(cs, ss) - min(ce, se))
+        if iou == 0.0 and gap < _DEDUP_GAP_SEC:
+            return True
+    return False
+
+
+def _seed_saved_ranges(dest_dir: str) -> list[tuple[float, float]]:
+    ranges: list[tuple[float, float]] = []
+    for sc in glob.glob(os.path.join(dest_dir, "*.json")):
+        try:
+            with open(sc, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            a = float(payload["absolute_start_sec"])
+            b = float(payload["absolute_end_sec"])
+            ranges.append((a, b))
+        except (OSError, KeyError, ValueError, json.JSONDecodeError):
+            continue
+    return ranges
+
+
+def _output_names(dest_dir: str, chunk_idx: int, highlight: Highlight) -> tuple[str, str]:
     slug = slugify(highlight.title) if highlight.title else f"chunk-{chunk_idx:03d}"
     base = f"{chunk_idx:03d}__score-{highlight.score:02d}__{slug}"
     return (
@@ -59,6 +95,14 @@ def process_file(source_path: str, analyzer, cfg: PipelineConfig) -> int:
 
     print(f"\n[pipeline] {os.path.basename(source_path)}  ({duration:.1f}s)")
 
+    stem = os.path.splitext(os.path.basename(source_path))[0]
+    dest_dir = os.path.join(cfg.out_dir, stem)
+    os.makedirs(dest_dir, exist_ok=True)
+
+    saved_ranges = _seed_saved_ranges(dest_dir)
+    if saved_ranges:
+        print(f"[pipeline] resuming with {len(saved_ranges)} prior clip range(s) loaded for dedup")
+
     saved = 0
     chunks = list(iter_chunks(source_path, chunk_sec=cfg.chunk_sec))
     for idx, (start, end) in enumerate(tqdm(chunks, desc="chunks", leave=False), start=1):
@@ -83,17 +127,30 @@ def process_file(source_path: str, analyzer, cfg: PipelineConfig) -> int:
             print(f"  [chunk {idx:03d}] skip  {verdict}")
             continue
 
-        if cfg.dry_run:
-            print(f"  [chunk {idx:03d}] DRY  {verdict}")
-            continue
-
-        clip_path, meta_path = _output_paths(cfg.out_dir, source_path, idx, highlight)
-        if os.path.exists(clip_path):
-            print(f"  [chunk {idx:03d}] exists; skipping {clip_path}")
-            continue
-
         abs_start = start + highlight.start_sec
         abs_end = start + highlight.end_sec
+
+        if _is_duplicate((abs_start, abs_end), saved_ranges):
+            print(
+                f"  [chunk {idx:03d}] duplicate of prior clip; "
+                f"skipping {abs_start:.1f}-{abs_end:.1f}s"
+            )
+            continue
+
+        if cfg.dry_run:
+            print(f"  [chunk {idx:03d}] DRY  {verdict}")
+            saved_ranges.append((abs_start, abs_end))
+            continue
+
+        # Resume guard: a prior run already produced a clip for this chunk index.
+        # Glob by index prefix so a different title-slug doesn't bypass the check.
+        existing = glob.glob(os.path.join(dest_dir, f"{idx:03d}__*.mp4"))
+        if existing:
+            print(f"  [chunk {idx:03d}] exists; skipping {existing[0]}")
+            saved_ranges.append((abs_start, abs_end))
+            continue
+
+        clip_path, meta_path = _output_names(dest_dir, idx, highlight)
         try:
             cut_and_crop(
                 src=source_path,
@@ -108,6 +165,7 @@ def process_file(source_path: str, analyzer, cfg: PipelineConfig) -> int:
             continue
 
         _write_sidecar(meta_path, source_path, start, end, highlight)
+        saved_ranges.append((abs_start, abs_end))
         saved += 1
         print(f"  [chunk {idx:03d}] SAVE {verdict} -> {clip_path}")
 

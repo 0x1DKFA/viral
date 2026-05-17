@@ -69,6 +69,40 @@ def test_end_before_start_recovers_or_rejects():
     assert h.start_sec == 0.0 and h.end_sec == 60.0
 
 
+def test_minimum_clip_expands_symmetrically():
+    raw = json.dumps({
+        "is_highlight": True, "score": 8, "start_sec": 30, "end_sec": 32,
+        "action_center_x": 0.5, "title": "x", "description": "y", "hashtags": [],
+    })
+    h = parse_highlight(raw, chunk_duration_sec=60.0, min_clip_sec=8.0)
+    assert h is not None
+    assert h.end_sec - h.start_sec >= 8.0
+    # window was 30-32 (2s); need 6 more total = 3s each side -> 27..35.
+    assert h.start_sec == 27.0 and h.end_sec == 35.0
+
+
+def test_minimum_clip_pushes_off_left_wall():
+    raw = json.dumps({
+        "is_highlight": True, "score": 8, "start_sec": 0.5, "end_sec": 2.0,
+        "action_center_x": 0.5, "title": "x", "description": "y", "hashtags": [],
+    })
+    h = parse_highlight(raw, chunk_duration_sec=60.0, min_clip_sec=8.0)
+    assert h is not None
+    assert h.start_sec == 0.0
+    assert h.end_sec == 8.0
+
+
+def test_minimum_clip_accepts_short_chunk():
+    # Chunk shorter than min_clip: accept the full chunk rather than reject.
+    raw = json.dumps({
+        "is_highlight": True, "score": 7, "start_sec": 1, "end_sec": 3,
+        "action_center_x": 0.5, "title": "x", "description": "y", "hashtags": [],
+    })
+    h = parse_highlight(raw, chunk_duration_sec=5.0, min_clip_sec=8.0)
+    assert h is not None
+    assert h.start_sec == 0.0 and h.end_sec == 5.0
+
+
 def test_slugify():
     assert slugify("Clutch 1v3 Ace!") == "clutch-1v3-ace"
     assert slugify("") == "untitled"

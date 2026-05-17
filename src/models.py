@@ -59,8 +59,17 @@ def _coerce_tags(v) -> list[str]:
     return []
 
 
-def parse_highlight(raw: str, chunk_duration_sec: float) -> Highlight | None:
-    """Parse VLM output into a Highlight. Returns None on unrecoverable failure."""
+def parse_highlight(
+    raw: str,
+    chunk_duration_sec: float,
+    min_clip_sec: float = 0.0,
+) -> Highlight | None:
+    """Parse VLM output into a Highlight. Returns None on unrecoverable failure.
+
+    If `min_clip_sec > 0` and the model's window is shorter, expand it symmetrically
+    (clamped to the chunk). If the chunk itself is shorter than min_clip_sec,
+    accept the full chunk rather than rejecting the highlight.
+    """
     if not raw or not raw.strip():
         return None
 
@@ -100,6 +109,20 @@ def parse_highlight(raw: str, chunk_duration_sec: float) -> Highlight | None:
         start, end = 0.0, chunk_duration_sec
         if end <= start:
             return None
+
+    if min_clip_sec > 0 and (end - start) < min_clip_sec:
+        # Expand the window symmetrically, then push off whichever wall we hit.
+        pad = (min_clip_sec - (end - start)) / 2.0
+        start = max(0.0, start - pad)
+        end = min(chunk_duration_sec, end + pad)
+        if (end - start) < min_clip_sec:
+            if start <= 0.0:
+                end = min(chunk_duration_sec, start + min_clip_sec)
+            else:
+                start = max(0.0, end - min_clip_sec)
+        # If the chunk itself is shorter than min_clip_sec, accept the whole chunk
+        # rather than dropping a valid highlight. Sliver chunks are rare (iter_chunks
+        # only emits a tail >= min_tail_sec) but worth handling.
 
     cx = _coerce_float(data.get("action_center_x"), default=0.5)
     cx = max(0.0, min(1.0, cx))

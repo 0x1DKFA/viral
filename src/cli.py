@@ -34,13 +34,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", help="Output directory (default: $OUTPUT_DIR or ./output)")
     p.add_argument("--threshold", type=int, help="Minimum viral score 1-10 (default: $VIRAL_THRESHOLD or 7)")
     p.add_argument("--chunk", type=float, default=60.0, help="Chunk length in seconds (default: 60)")
-    p.add_argument("--fps", type=float, default=1.0, help="Frame sampling fps within a chunk (default: 1.0)")
+    p.add_argument("--fps", type=float, default=2.0, help="Frame sampling fps within a chunk (default: 2.0)")
     p.add_argument("--model", help="Hugging Face model id (default: $VLM_MODEL_ID)")
     p.add_argument(
         "--max-frame-pixels",
         type=int,
         default=480 * 854,
         help="Downscale each VLM frame so width*height <= this (default ~480p). Lower = less RAM/VRAM.",
+    )
+    p.add_argument(
+        "--min-clip",
+        type=float,
+        default=8.0,
+        help="Minimum saved clip length in seconds (default: 8)",
+    )
+    p.add_argument(
+        "--max-clip",
+        type=float,
+        default=25.0,
+        help="Maximum saved clip length in seconds (default: 25)",
     )
     p.add_argument("--keep-source", action="store_true", help="Do not move processed source files")
     p.add_argument("--dry-run", action="store_true", help="Score chunks and print, do not cut clips")
@@ -69,7 +81,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Lazy import to avoid pulling torch/transformers in dry runs that don't reach analysis.
     from src.analyzer import VLMAnalyzer
 
-    analyzer = VLMAnalyzer(model_id=model_id, max_frame_pixels=args.max_frame_pixels)
+    analyzer = VLMAnalyzer(
+        model_id=model_id,
+        max_frame_pixels=args.max_frame_pixels,
+        min_clip_sec=args.min_clip,
+        max_clip_sec=args.max_clip,
+    )
 
     cfg = PipelineConfig(
         out_dir=out_dir,
