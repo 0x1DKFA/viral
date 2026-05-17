@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import gc
+import logging
+import time
 from typing import Any
 
 import torch
@@ -11,12 +13,15 @@ from transformers import (
     BitsAndBytesConfig,
 )
 
-from src.models import Highlight, parse_highlight
+from src.models import Highlight, ScoutRegion, parse_highlight
+from src.scout import SCOUT_PROMPT, SCOUT_RETRY_SUFFIX, parse_scout_regions
 
 try:
     from qwen_vl_utils import process_vision_info  # type: ignore
 except ImportError:  # pragma: no cover - optional path, keeps tests importable on CPU
     process_vision_info = None  # type: ignore
+
+logger = logging.getLogger(__name__)
 
 
 PROMPT = (
@@ -29,20 +34,23 @@ PROMPT = (
     "boss kills, surprising reactions. Mundane gameplay (walking, looting, menus, loading, "
     "downtime) is NOT viral, even if technically competent.\n"
     "\n"
-    "Pick a clip window that includes:\n"
+    "If a real highlight is present, pick the natural window of the moment:\n"
     "  - 2-4 seconds of LEAD-IN (the setup before the moment)\n"
     "  - the PAYOFF itself\n"
     "  - 1-2 seconds of AFTERMATH (reaction, kill feed, scoreboard)\n"
-    "The window MUST be at least {min_clip:.0f} seconds long and at most {max_clip:.0f} seconds.\n"
-    "If no moment in this {duration:.1f}-second segment meets the bar, set is_highlight=false "
-    "and score <= 4 — do NOT manufacture a highlight from filler.\n"
+    "Typical natural windows are 5-15 seconds. Do not exceed {max_clip:.0f} seconds.\n"
+    "We will pad your window on our side so the final saved clip is at least {min_clip:.0f} seconds — "
+    "you do NOT need to stretch the window to {min_clip:.0f} seconds yourself. "
+    "Pick the moment that's actually there; we'll handle minimum length.\n"
+    "If no real highlight is present, set is_highlight=false and score <= 4 — "
+    "do NOT manufacture a highlight from filler.\n"
     "\n"
     "Return ONLY a single JSON object with these exact keys:\n"
     '{{\n'
     '  "is_highlight": boolean,\n'
     '  "score": integer 1-10 (10 = must-post, 7+ = worth posting, <=4 = skip),\n'
-    '  "start_sec": float (window start, seconds from clip start),\n'
-    '  "end_sec": float (window end, seconds from clip start; end_sec - start_sec >= {min_clip:.0f}),\n'
+    '  "start_sec": float (natural window start, seconds from clip start),\n'
+    '  "end_sec": float (natural window end, seconds from clip start),\n'
     '  "action_center_x": float 0.0-1.0 (horizontal center of the action; 0.5 = middle),\n'
     '  "title": string (<= 60 chars, punchy, no quotes, no clickbait emojis),\n'
     '  "description": string (1-2 sentences describing what happens),\n'
@@ -63,12 +71,16 @@ EXPLAIN_SIZING_FRAGMENT = (
     "Set end_sec - start_sec close to recommended_duration_sec."
 )
 
+REGION_HINT = (
+    "A coarse scout pass tagged this region as: {region_type}.\n"
+    "Confirm whether it's actually viral, refine the start/end if needed.\n\n"
+)
+
 
 class VLMAnalyzer:
     def __init__(
         self,
         model_id: str = "Qwen/Qwen3-VL-8B-Instruct",
-        max_frame_pixels: int = 480 * 854,  # ~480p; shrinks RAM/VRAM use a lot
         min_clip_sec: float = 8.0,
         max_clip_sec: float = 25.0,
         explain_sizing: bool = False,
@@ -78,7 +90,8 @@ class VLMAnalyzer:
                 "qwen-vl-utils is required at runtime; install via requirements.txt"
             )
 
-        print(f"Loading {model_id} in 4-bit...")
+        logger.info("loading %s in 4-bit...", model_id)
+        t0 = time.time()
         quantization_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_compute_dtype=torch.float16,
@@ -98,51 +111,41 @@ class VLMAnalyzer:
         self.model.eval()
         self.processor = AutoProcessor.from_pretrained(model_id)
         self.model_id = model_id
-        self.max_frame_pixels = max_frame_pixels
         self.min_clip_sec = min_clip_sec
         self.max_clip_sec = max_clip_sec
         self.explain_sizing = explain_sizing
+        logger.info("model loaded in %.1fs on device=%s", time.time() - t0, self.model.device)
 
-    def _shrink_frames(self, frames: list[Image.Image]) -> list[Image.Image]:
-        """Downscale frames so total pixel count per frame stays under the budget.
+    @staticmethod
+    def shrink_frames(
+        frames: list[Image.Image], max_frame_pixels: int
+    ) -> list[Image.Image]:
+        """Downscale frames so width*height <= max_frame_pixels per frame.
 
-        The VLM doesn't need 1080p to judge a clip; shrinking to ~480p slashes the
-        encoder activation memory dramatically with minimal quality loss for scoring.
+        Caller picks the budget — detail pass uses ~480p, scout uses ~240p.
         """
-        if self.max_frame_pixels <= 0:
+        if max_frame_pixels <= 0:
             return frames
         out: list[Image.Image] = []
         for f in frames:
             w, h = f.size
             pixels = w * h
-            if pixels <= self.max_frame_pixels:
+            if pixels <= max_frame_pixels:
                 out.append(f)
                 continue
-            scale = (self.max_frame_pixels / pixels) ** 0.5
+            scale = (max_frame_pixels / pixels) ** 0.5
             new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
             out.append(f.resize(new_size, Image.BILINEAR))
         return out
 
     def _build_messages(
-        self, frames: list[Image.Image], duration_sec: float, retry: bool
+        self, frames: list[Image.Image], prompt: str, fps_used: float
     ) -> list[dict[str, Any]]:
-        prompt = PROMPT.format(
-            duration=duration_sec,
-            min_clip=self.min_clip_sec,
-            max_clip=self.max_clip_sec,
-        )
-        if self.explain_sizing:
-            prompt = prompt + EXPLAIN_SIZING_FRAGMENT.format(
-                min_clip=self.min_clip_sec,
-                max_clip=self.max_clip_sec,
-            )
-        if retry:
-            prompt = prompt + RETRY_SUFFIX
         return [
             {
                 "role": "user",
                 "content": [
-                    {"type": "video", "video": frames, "fps": 1.0},
+                    {"type": "video", "video": frames, "fps": fps_used},
                     {"type": "text", "text": prompt},
                 ],
             }
@@ -157,11 +160,36 @@ class VLMAnalyzer:
         image_inputs, video_inputs = result  # type: ignore[misc]
         return image_inputs, video_inputs, {}
 
-    def _generate(self, messages) -> str:
+    def _generate(
+        self,
+        messages,
+        frame_count: int,
+        duration_sec: float,
+        fps_used: float,
+        max_new_tokens: int = 256,
+    ) -> str:
+        t0 = time.time()
         text = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
+        logger.debug(
+            "prompt prepared: %d chars, frames=%d duration=%.1fs fps=%.2f",
+            len(text), frame_count, duration_sec, fps_used,
+        )
         image_inputs, video_inputs, video_kwargs = self._unpack_vision(messages)
+
+        # Surface real video metadata so the Qwen3-VL processor doesn't warn and
+        # silently assume source fps=24 (which would mis-place MRoPE temporal
+        # positions for our pre-sampled frames).
+        video_kwargs.setdefault(
+            "video_metadata",
+            [{
+                "fps": fps_used,
+                "total_frames": frame_count,
+                "duration": duration_sec,
+            }],
+        )
+
         inputs = self.processor(
             text=[text],
             images=image_inputs,
@@ -173,16 +201,19 @@ class VLMAnalyzer:
 
         try:
             with torch.inference_mode():
-                generated_ids = self.model.generate(**inputs, max_new_tokens=256)
+                generated_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
             trimmed = [
                 out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
             ]
-            return self.processor.batch_decode(
+            decoded = self.processor.batch_decode(
                 trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
             )[0]
+            logger.debug(
+                "generation done in %.1fs (%d new token(s)); output: %r",
+                time.time() - t0, trimmed[0].shape[0], decoded[:300],
+            )
+            return decoded
         finally:
-            # Release activation / KV-cache memory between chunks so the next call
-            # doesn't compound. Cheap to do, big difference on tight-RAM systems.
             del inputs
             if "generated_ids" in locals():
                 del generated_ids
@@ -190,15 +221,83 @@ class VLMAnalyzer:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    def analyze(self, frames: list[Image.Image], duration_sec: float) -> Highlight | None:
+    def scout(
+        self,
+        frames: list[Image.Image],
+        window_duration_sec: float,
+        fps_used: float,
+        frame_pixels_budget: int = 240 * 432,
+    ) -> list[ScoutRegion]:
+        """Identify viral candidate regions within a scout window.
+
+        Returns regions with start_sec/end_sec relative to the window start.
+        Pipeline adds the window offset to convert to absolute time.
+        """
+        if not frames:
+            return []
+        frames = self.shrink_frames(frames, frame_pixels_budget)
+
+        for retry in (False, True):
+            prompt = SCOUT_PROMPT.format(window_duration=window_duration_sec)
+            if retry:
+                prompt = prompt + SCOUT_RETRY_SUFFIX
+            messages = self._build_messages(frames, prompt=prompt, fps_used=fps_used)
+            raw = self._generate(
+                messages,
+                frame_count=len(frames),
+                duration_sec=window_duration_sec,
+                fps_used=fps_used,
+                max_new_tokens=512,  # scout output is a list; needs more headroom
+            )
+            regions = parse_scout_regions(raw, window_duration_sec=window_duration_sec)
+            if regions or not retry:
+                # Empty list on first try might be legitimate (no highlights in window).
+                # Only retry if the first attempt looked like a parse failure (no JSON at all).
+                if regions:
+                    return regions
+                if "{" not in raw:
+                    logger.warning(
+                        "scout: no JSON found in output (retry=%s): %r", retry, raw[:200]
+                    )
+                    continue
+                return []
+        return []
+
+    def analyze(
+        self,
+        frames: list[Image.Image],
+        duration_sec: float,
+        fps_used: float,
+        frame_pixels_budget: int = 480 * 854,
+        region_type: str | None = None,
+    ) -> Highlight | None:
         if not frames:
             return None
 
-        frames = self._shrink_frames(frames)
+        frames = self.shrink_frames(frames, frame_pixels_budget)
 
         for retry in (False, True):
-            messages = self._build_messages(frames, duration_sec, retry=retry)
-            raw = self._generate(messages)
+            prompt = PROMPT.format(
+                duration=duration_sec,
+                min_clip=self.min_clip_sec,
+                max_clip=self.max_clip_sec,
+            )
+            if self.explain_sizing:
+                prompt = prompt + EXPLAIN_SIZING_FRAGMENT.format(
+                    min_clip=self.min_clip_sec,
+                    max_clip=self.max_clip_sec,
+                )
+            if region_type:
+                prompt = REGION_HINT.format(region_type=region_type) + prompt
+            if retry:
+                prompt = prompt + RETRY_SUFFIX
+            messages = self._build_messages(frames, prompt=prompt, fps_used=fps_used)
+            raw = self._generate(
+                messages,
+                frame_count=len(frames),
+                duration_sec=duration_sec,
+                fps_used=fps_used,
+            )
             highlight = parse_highlight(
                 raw,
                 chunk_duration_sec=duration_sec,
@@ -206,6 +305,6 @@ class VLMAnalyzer:
             )
             if highlight is not None:
                 return highlight
-            print(f"[analyzer] Unparseable output (retry={retry}): {raw[:200]!r}")
+            logger.warning("analyzer: unparseable output (retry=%s): %r", retry, raw[:200])
 
         return None

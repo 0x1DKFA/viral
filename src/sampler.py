@@ -1,55 +1,29 @@
 from __future__ import annotations
 
-from typing import Iterator
+import logging
 
 import cv2
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 
 def video_duration_sec(path: str) -> float:
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
+        logger.debug("video_duration_sec: cannot open %s", path)
         return 0.0
     try:
         fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
         frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0
         if fps <= 0 or frames <= 0:
+            logger.debug("video_duration_sec: bad probe fps=%.2f frames=%.0f for %s", fps, frames, path)
             return 0.0
-        return float(frames) / float(fps)
+        duration = float(frames) / float(fps)
+        logger.debug("probe %s: fps=%.2f frames=%.0f duration=%.2fs", path, fps, frames, duration)
+        return duration
     finally:
         cap.release()
-
-
-def iter_chunks(
-    path: str, chunk_sec: float = 60.0, min_tail_sec: float = 5.0
-) -> Iterator[tuple[float, float]]:
-    """Yield (start, end) windows covering the whole video.
-
-    The final window is merged into the previous one if it would be shorter
-    than `min_tail_sec`, to avoid sending a 2-second sliver to the VLM.
-    """
-    duration = video_duration_sec(path)
-    if duration <= 0:
-        return
-
-    starts: list[float] = []
-    t = 0.0
-    while t < duration:
-        starts.append(t)
-        t += chunk_sec
-
-    for i, start in enumerate(starts):
-        end = min(start + chunk_sec, duration)
-        is_last = i == len(starts) - 1
-        if not is_last:
-            yield (start, end)
-            continue
-        # Last chunk: if it's too short and we have a predecessor, the caller
-        # would still get useful frames; we just yield it as-is for simplicity
-        # but skip slivers under min_tail_sec when there's a prior chunk.
-        if (end - start) < min_tail_sec and len(starts) > 1:
-            return
-        yield (start, end)
 
 
 def extract_frames(

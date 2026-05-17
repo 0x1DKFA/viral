@@ -5,6 +5,19 @@ import re
 from dataclasses import asdict, dataclass, field
 
 
+_ALLOWED_SCOUT_TYPES = frozenset({
+    "firefight", "multi_kill", "clutch", "ace", "movement", "boss_kill",
+    "glitch", "fail", "jumpscare", "big_damage", "reaction", "other",
+})
+
+
+@dataclass
+class ScoutRegion:
+    start_sec: float   # absolute time in source (or window-relative before pipeline offsets)
+    end_sec: float
+    type: str          # one of _ALLOWED_SCOUT_TYPES; unknown values coerced to "other"
+
+
 @dataclass
 class Highlight:
     is_highlight: bool
@@ -125,8 +138,7 @@ def parse_highlight(
             else:
                 start = max(0.0, end - min_clip_sec)
         # If the chunk itself is shorter than min_clip_sec, accept the whole chunk
-        # rather than dropping a valid highlight. Sliver chunks are rare (iter_chunks
-        # only emits a tail >= min_tail_sec) but worth handling.
+        # rather than dropping a valid highlight. Rare in practice but worth handling.
 
     cx = _coerce_float(data.get("action_center_x"), default=0.5)
     cx = max(0.0, min(1.0, cx))

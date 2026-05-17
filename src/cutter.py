@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
+
+logger = logging.getLogger(__name__)
 
 
 def _has_nvenc() -> bool:
@@ -69,4 +72,5 @@ def cut_and_crop(
         "-movflags", "+faststart",
         out,
     ]
+    logger.debug("ffmpeg cmd: %s", " ".join(cmd))
     subprocess.run(cmd, check=True, capture_output=True)

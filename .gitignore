@@ -4,6 +4,7 @@ pip_tmp/
 processed/
 output/
 raw_recordings/
+logs/
 __pycache__/
 *.pyc
 .env
