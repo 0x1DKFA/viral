@@ -15,6 +15,10 @@ class Highlight:
     title: str
     description: str
     hashtags: list[str] = field(default_factory=list)
+    # Only populated when --explain-sizing is on; surfaces the model's own
+    # reasoning about clip length, useful for auditing whether sizing is adaptive.
+    recommended_duration_sec: float | None = None
+    sizing_reason: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -133,6 +137,14 @@ def parse_highlight(
     description = str(data.get("description", "")).strip()
     hashtags = _coerce_tags(data.get("hashtags"))
 
+    rec_dur: float | None = None
+    if "recommended_duration_sec" in data:
+        try:
+            rec_dur = float(data["recommended_duration_sec"])
+        except (TypeError, ValueError):
+            rec_dur = None
+    sizing_reason = str(data.get("sizing_reason", "")).strip()
+
     return Highlight(
         is_highlight=is_highlight,
         score=score,
@@ -142,6 +154,8 @@ def parse_highlight(
         title=title,
         description=description,
         hashtags=hashtags,
+        recommended_duration_sec=rec_dur,
+        sizing_reason=sizing_reason,
     )
 
 

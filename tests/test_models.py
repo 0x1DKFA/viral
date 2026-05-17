@@ -103,6 +103,41 @@ def test_minimum_clip_accepts_short_chunk():
     assert h.start_sec == 0.0 and h.end_sec == 5.0
 
 
+def test_sizing_fields_absent_by_default():
+    raw = json.dumps({
+        "is_highlight": True, "score": 8, "start_sec": 10, "end_sec": 20,
+        "action_center_x": 0.5, "title": "x", "description": "y", "hashtags": [],
+    })
+    h = parse_highlight(raw, chunk_duration_sec=60.0)
+    assert h is not None
+    assert h.recommended_duration_sec is None
+    assert h.sizing_reason == ""
+
+
+def test_sizing_fields_parsed_when_present():
+    raw = json.dumps({
+        "is_highlight": True, "score": 9, "start_sec": 10, "end_sec": 22,
+        "action_center_x": 0.5, "title": "x", "description": "y", "hashtags": [],
+        "recommended_duration_sec": 12.0,
+        "sizing_reason": "needs setup time before the kill",
+    })
+    h = parse_highlight(raw, chunk_duration_sec=60.0)
+    assert h is not None
+    assert h.recommended_duration_sec == 12.0
+    assert h.sizing_reason == "needs setup time before the kill"
+
+
+def test_sizing_fields_garbage_tolerated():
+    raw = json.dumps({
+        "is_highlight": True, "score": 9, "start_sec": 10, "end_sec": 22,
+        "action_center_x": 0.5, "title": "x", "description": "y", "hashtags": [],
+        "recommended_duration_sec": "not a number",
+    })
+    h = parse_highlight(raw, chunk_duration_sec=60.0)
+    assert h is not None
+    assert h.recommended_duration_sec is None
+
+
 def test_slugify():
     assert slugify("Clutch 1v3 Ace!") == "clutch-1v3-ace"
     assert slugify("") == "untitled"

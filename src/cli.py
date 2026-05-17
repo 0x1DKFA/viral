@@ -54,6 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=25.0,
         help="Maximum saved clip length in seconds (default: 25)",
     )
+    p.add_argument(
+        "--explain-sizing",
+        action="store_true",
+        help="Ask the VLM to include recommended_duration_sec + sizing_reason in each sidecar (useful for auditing whether clip length is actually adaptive).",
+    )
     p.add_argument("--keep-source", action="store_true", help="Do not move processed source files")
     p.add_argument("--dry-run", action="store_true", help="Score chunks and print, do not cut clips")
     return p
@@ -86,6 +91,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         max_frame_pixels=args.max_frame_pixels,
         min_clip_sec=args.min_clip,
         max_clip_sec=args.max_clip,
+        explain_sizing=args.explain_sizing,
     )
 
     cfg = PipelineConfig(

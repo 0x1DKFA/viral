@@ -56,6 +56,13 @@ RETRY_SUFFIX = (
     "no prose, no markdown fencing."
 )
 
+EXPLAIN_SIZING_FRAGMENT = (
+    "\nAlso include these two extra keys in the JSON object:\n"
+    '  "recommended_duration_sec": float (your ideal length for this clip in seconds, between {min_clip:.0f} and {max_clip:.0f}),\n'
+    '  "sizing_reason": string (one short sentence explaining why this length is right, e.g. "dense action, keep tight" or "needs setup time")\n'
+    "Set end_sec - start_sec close to recommended_duration_sec."
+)
+
 
 class VLMAnalyzer:
     def __init__(
@@ -64,6 +71,7 @@ class VLMAnalyzer:
         max_frame_pixels: int = 480 * 854,  # ~480p; shrinks RAM/VRAM use a lot
         min_clip_sec: float = 8.0,
         max_clip_sec: float = 25.0,
+        explain_sizing: bool = False,
     ):
         if process_vision_info is None:
             raise RuntimeError(
@@ -93,6 +101,7 @@ class VLMAnalyzer:
         self.max_frame_pixels = max_frame_pixels
         self.min_clip_sec = min_clip_sec
         self.max_clip_sec = max_clip_sec
+        self.explain_sizing = explain_sizing
 
     def _shrink_frames(self, frames: list[Image.Image]) -> list[Image.Image]:
         """Downscale frames so total pixel count per frame stays under the budget.
@@ -122,6 +131,11 @@ class VLMAnalyzer:
             min_clip=self.min_clip_sec,
             max_clip=self.max_clip_sec,
         )
+        if self.explain_sizing:
+            prompt = prompt + EXPLAIN_SIZING_FRAGMENT.format(
+                min_clip=self.min_clip_sec,
+                max_clip=self.max_clip_sec,
+            )
         if retry:
             prompt = prompt + RETRY_SUFFIX
         return [
