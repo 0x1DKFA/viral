@@ -75,6 +75,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--keep-source", action="store_true", help="Do not move processed source files")
     p.add_argument("--dry-run", action="store_true", help="Score regions and print, do not cut clips")
 
+    # Reel
+    p.add_argument(
+        "--reel-landscape",
+        action="store_true",
+        help="Build the highlight reel at 16:9 (re-cut from source). Default is 9:16 lossless concat of existing clips.",
+    )
+    p.add_argument(
+        "--no-reel",
+        action="store_true",
+        help="Skip building the highlight reel.",
+    )
+
     # Logging
     p.add_argument("--log-dir", default=None,
                    help="Per-run log file directory (default: $LOG_DIR or ./logs)")
@@ -137,6 +149,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         region_pad_sec=args.region_pad,
         keep_source=args.keep_source,
         dry_run=args.dry_run,
+        build_reel=not args.no_reel,
+        reel_landscape=args.reel_landscape,
     )
     logger.debug("pipeline config: %r", cfg)
 

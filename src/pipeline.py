@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from src.cutter import cut_and_crop
 from src.models import Highlight, ScoutRegion, slugify
+from src.reel import build_reel
 from src.sampler import extract_frames, video_duration_sec
 from src.scout import iter_scout_windows, merge_regions, split_long_regions
 
@@ -34,6 +35,8 @@ class PipelineConfig:
     region_pad_sec: float = 2.0
     keep_source: bool = False
     dry_run: bool = False
+    build_reel: bool = True
+    reel_landscape: bool = False
 
 
 # Dedup thresholds. IoU catches partial overlaps; gap catches the case where two
@@ -272,8 +275,23 @@ def process_file(source_path: str, analyzer, cfg: PipelineConfig) -> int:
         saved += 1
         logger.info("region %03d: SAVE %s -> %s", idx, verdict, clip_path)
 
+    _maybe_build_reel(dest_dir, source_path, cfg)
     _maybe_archive(source_path, cfg)
     return saved
+
+
+def _maybe_build_reel(dest_dir: str, source_path: str, cfg: PipelineConfig) -> None:
+    if not cfg.build_reel or cfg.dry_run:
+        return
+    try:
+        build_reel(
+            dest_dir=dest_dir,
+            source_path=source_path,
+            landscape=cfg.reel_landscape,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or b"").decode("utf-8", errors="replace")[-400:]
+        logger.error("reel build failed; continuing. stderr tail:\n%s", stderr)
 
 
 def _maybe_archive(source_path: str, cfg: PipelineConfig) -> None:

@@ -181,11 +181,14 @@ class VLMAnalyzer:
         # Surface real video metadata so the Qwen3-VL processor doesn't warn and
         # silently assume source fps=24 (which would mis-place MRoPE temporal
         # positions for our pre-sampled frames).
+        # NOTE: VideoMetadata's frame-count field is named `total_num_frame`
+        # (singular) in the installed transformers version. Don't "fix" to
+        # `total_frames` — that raises `unexpected keyword argument`.
         video_kwargs.setdefault(
             "video_metadata",
             [{
                 "fps": fps_used,
-                "total_frames": frame_count,
+                "total_num_frame": frame_count,
                 "duration": duration_sec,
             }],
         )
