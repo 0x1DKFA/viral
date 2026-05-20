@@ -145,8 +145,9 @@ The scout is run at low fps/low resolution so it can see the whole video without
 |---|---|---|
 | `--scout-window SEC` | `300` (5 min) | Length of each scout window. Larger = fewer windows but more frames per call. |
 | `--scout-overlap SEC` | `60` | How much consecutive scout windows overlap. The overlap is what lets a fight straddling a window boundary get stitched back together by `merge_regions`. |
-| `--scout-fps FLOAT` | `0.5` | Frames per second sampled during scout. Higher catches sub-second moments at the cost of VRAM and runtime. |
-| `--scout-frame-pixels INT` | `240*432 ≈ 103680` | Per-frame pixel budget for scout. Each scout frame is downscaled until `w*h <= this`. |
+| `--scout-fps FLOAT` | `1.0` | Frames per second sampled during scout. Higher catches sub-second moments at the cost of VRAM and runtime. |
+| `--scout-frame-pixels INT` | `360*640 ≈ 230400` | Per-frame pixel budget for scout. Each scout frame is downscaled until `w*h <= this`. Lower for less VRAM, higher if the scout is missing HUD detail. |
+| `--no-scout` | off | Bypass scout entirely. Whole source becomes one region and `split_long_regions` chops it into `--max-region` sub-regions. Use when scout under-flags (e.g. sustained boss-fight content). |
 
 ### Detail pass (per-region scoring + metadata)
 
@@ -224,6 +225,7 @@ These act as defaults; CLI flags override.
 | Clips are too short / cut too tight | Raise `--max-clip` (the model can pick longer windows). |
 | Clips cluster at exactly `--min-clip` | Turn on `--explain-sizing` to see if the model is actually adapting or just defaulting. |
 | Engagements still get chopped | Increase `--scout-overlap` so fights at window boundaries get more redundant coverage. |
+| Scout returns zero regions on a video that obviously has highlights | Try `--no-scout` to bypass scout and let the detail pass run on every ~90s sub-region. Also check the WARNING log line that shows raw scout output. |
 | Want a YouTube-ready recap | `--reel-landscape`. |
 | Same input, want to compare two settings | `--keep-source --dry-run` first; the source stays in place so you can rerun. |
 

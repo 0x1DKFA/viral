@@ -44,10 +44,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Scout window length in seconds (default: 300)")
     p.add_argument("--scout-overlap", type=float, default=60.0,
                    help="Scout window overlap in seconds (default: 60)")
-    p.add_argument("--scout-fps", type=float, default=0.5,
-                   help="Scout frame sampling fps (default: 0.5)")
-    p.add_argument("--scout-frame-pixels", type=int, default=240 * 432,
-                   help="Scout per-frame pixel budget (default ~240p)")
+    p.add_argument("--scout-fps", type=float, default=1.0,
+                   help="Scout frame sampling fps (default: 1.0)")
+    p.add_argument("--scout-frame-pixels", type=int, default=360 * 640,
+                   help="Scout per-frame pixel budget (default ~360p)")
+    p.add_argument("--no-scout", action="store_true",
+                   help="Bypass scout entirely. Treats the whole source as one region; "
+                        "split_long_regions then chops it into <=--max-region sub-regions "
+                        "and the detail pass runs on each. Useful as a fallback when the "
+                        "scout under-flags (e.g. sustained boss-fight content).")
 
     # Detail pass
     p.add_argument("--detail-fps", type=float, default=2.0,
@@ -151,6 +156,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         dry_run=args.dry_run,
         build_reel=not args.no_reel,
         reel_landscape=args.reel_landscape,
+        no_scout=args.no_scout,
     )
     logger.debug("pipeline config: %r", cfg)
 

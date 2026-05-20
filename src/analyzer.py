@@ -253,17 +253,20 @@ class VLMAnalyzer:
                 max_new_tokens=512,  # scout output is a list; needs more headroom
             )
             regions = parse_scout_regions(raw, window_duration_sec=window_duration_sec)
-            if regions or not retry:
-                # Empty list on first try might be legitimate (no highlights in window).
-                # Only retry if the first attempt looked like a parse failure (no JSON at all).
-                if regions:
-                    return regions
-                if "{" not in raw:
-                    logger.warning(
-                        "scout: no JSON found in output (retry=%s): %r", retry, raw[:200]
-                    )
-                    continue
-                return []
+            if regions:
+                return regions
+            if "{" not in raw:
+                logger.warning(
+                    "scout: no JSON found in output (retry=%s): %r", retry, raw[:500]
+                )
+                continue
+            # Parsed successfully but the model returned an empty list. This is the
+            # most common silent-failure mode — surface the raw response so the user
+            # can see what the model actually said without needing --debug.
+            logger.warning(
+                "scout returned 0 regions; raw output: %r", raw[:500]
+            )
+            return []
         return []
 
     def analyze(

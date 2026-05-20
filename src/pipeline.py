@@ -27,8 +27,8 @@ class PipelineConfig:
     threshold: int = 7
     scout_window_sec: float = 300.0
     scout_overlap_sec: float = 60.0
-    scout_fps: float = 0.5
-    scout_frame_pixels: int = 240 * 432
+    scout_fps: float = 1.0
+    scout_frame_pixels: int = 360 * 640
     detail_fps: float = 2.0
     detail_frame_pixels: int = 480 * 854
     max_region_sec: float = 90.0
@@ -37,6 +37,7 @@ class PipelineConfig:
     dry_run: bool = False
     build_reel: bool = True
     reel_landscape: bool = False
+    no_scout: bool = False
 
 
 # Dedup thresholds. IoU catches partial overlaps; gap catches the case where two
@@ -170,12 +171,22 @@ def process_file(source_path: str, analyzer, cfg: PipelineConfig) -> int:
     os.makedirs(dest_dir, exist_ok=True)
     logger.debug("output dir: %s", dest_dir)
 
-    # Stage 1: scout
-    raw_regions = _run_scout(source_path, duration, analyzer, cfg)
-    if not raw_regions:
-        logger.info("scout found no regions; nothing to process")
-        _maybe_archive(source_path, cfg)
-        return 0
+    # Stage 1: scout (or bypass)
+    if cfg.no_scout:
+        logger.info(
+            "--no-scout: treating whole source as one 'other' region "
+            "(will be split into <=%.0fs sub-regions)", cfg.max_region_sec,
+        )
+        raw_regions = [ScoutRegion(start_sec=0.0, end_sec=duration, type="other")]
+    else:
+        raw_regions = _run_scout(source_path, duration, analyzer, cfg)
+        if not raw_regions:
+            logger.warning(
+                "scout found no regions across all windows. "
+                "Consider --no-scout to bypass, or --debug to inspect raw scout output."
+            )
+            _maybe_archive(source_path, cfg)
+            return 0
 
     merged = merge_regions(raw_regions)
     split = split_long_regions(merged, max_sec=cfg.max_region_sec)
