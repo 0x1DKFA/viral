@@ -188,7 +188,7 @@ class VLMAnalyzer:
             "video_metadata",
             [{
                 "fps": fps_used,
-                "total_num_frame": frame_count,
+                "total_num_frames": frame_count,
                 "duration": duration_sec,
             }],
         )
